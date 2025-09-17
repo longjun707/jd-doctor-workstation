@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "陶医生工作台助手",
+  "version": "4.1",
+  "description": "提供标记和自动处理功能。",
+  "permissions": [
+    "storage",
+    "notifications"
+  ],
+  "host_permissions": [
+    "https://jddoctor.jd.com/*",
+    "https://api.m.jd.com/*",
+    "http://117.72.208.155:7031/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://jddoctor.jd.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "page/main.bundle.js"
+      ],
+      "matches": [
+        "https://jddoctor.jd.com/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';"
+  }
+}
