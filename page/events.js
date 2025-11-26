@@ -3,7 +3,7 @@ import { ui } from './ui.js';
 import { autoRxService } from './autoRx.js';
 import { apiService } from './api.js';
 import { Logger, getRandomDelay } from './utils.js'; // Import getRandomDelay
-import { UI_CONFIG, SELECTORS } from './config.js'; // Import SELECTORS
+import { UI_CONFIG, SELECTORS, MARK_SOUND_URL } from './config.js'; // Import SELECTORS and MARK_SOUND_URL
 
 /**
  * Handles all user interaction events.
@@ -14,6 +14,8 @@ class EventService {
         this.autoRxIntervalId = null;
         this.isWorkStatusOpen = true; // 默认开诊状态
         this.isRightPanelVisible = false; // 默认隐藏面板 // 默认右侧面板可见
+        this.windowResizeThreshold = 1400; // 窗口宽度阈值（像素）
+        this.isAutoResizeEnabled = true; // 是否启用自动调整
     }
 
     /**
@@ -34,15 +36,19 @@ class EventService {
         if (autoRxStatusLabel) {
             autoRxStatusLabel.addEventListener('click', this.#handleAutoRxClick.bind(this));
         }
-        if (panelToggleButton) {
-            panelToggleButton.addEventListener('click', this.#handlePanelToggleClick.bind(this));
-        }
+        // 面板切换按钮已移除，使用自动窗口大小调整
+        // if (panelToggleButton) {
+        //     panelToggleButton.addEventListener('click', this.#handlePanelToggleClick.bind(this));
+        // }
         
         // 初始化面板状态
         this.#initializePanelState();
         
         // 启动面板自动检测和隐藏
         this.#startPanelAutoHide();
+        
+        // 启动窗口大小监听
+        this.#startWindowResizeListener();
     }
 
     #handleButtonsContainerClick(event) {
@@ -78,6 +84,9 @@ class EventService {
                     break;
                 }
             }
+            
+            // 保存更新后的状态
+            ui.saveMarkedPatientsPublic();
 
         } else {
             // Case 2: Button is idle - mark the current patient
@@ -85,9 +94,29 @@ class EventService {
             if (currentPatientName) {
                 button.textContent = currentPatientName;
                 button.style.setProperty('background-color', UI_CONFIG.BUTTON_COLORS.MARKED, 'important');
+                // 添加到 map
+                ui.patientButtonMap.set(currentPatientName, button);
+                // 保存到 localStorage
+                ui.saveMarkedPatientsPublic();
+                console.log(`✅ 手动标记患者: ${currentPatientName}`);
+                // 播放标记提醒声音
+                this.#playMarkSound();
             } else {
                 // Production build should not have logs.
             }
+        }
+    }
+
+    /**
+     * 播放标记提醒声音（通过 content script）
+     */
+    #playMarkSound() {
+        try {
+            console.log('🔊 请求播放音频');
+            // 发送消息给 content script 播放音频
+            window.postMessage({ type: 'PLAY_MARK_AUDIO' }, '*');
+        } catch (error) {
+            console.error('❌ 发送播放音频请求失败:', error);
         }
     }
 
@@ -102,7 +131,7 @@ class EventService {
             // 根据当前按钮状态决定要发送的请求
             // 如果当前显示"开诊"，点击后发送开诊请求，然后变为"关诊"
             // 如果当前显示"关诊"，点击后发送关诊请求，然后变为"开诊"
-            const workStatus = this.isWorkStatusOpen ? 1 : 2; // 当前状态对应的API请求
+            const workStatus = this.isWorkStatusOpen ? 1 : 5; // 当前状态对应的API请求
             
             // 调用API
             await apiService.changeWorkStatus(workStatus);
@@ -189,6 +218,71 @@ class EventService {
                 }
             }
         }, 500);
+    }
+
+    /**
+     * 启动窗口大小监听，自动展开/隐藏面板
+     * 基于宽高比：宽度 > 高度时显示面板（横屏），否则隐藏（竖屏）
+     */
+    #startWindowResizeListener() {
+        let resizeTimeout = null;
+        
+        const handleResize = () => {
+            // 防抖处理，避免频繁触发
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+            }
+            
+            resizeTimeout = setTimeout(() => {
+                if (!this.isAutoResizeEnabled) return;
+                
+                const currentWidth = window.innerWidth;
+                const currentHeight = window.innerHeight;
+                const isLandscape = currentWidth > currentHeight; // 横屏
+                
+                // 横屏时显示面板
+                if (isLandscape && !this.isRightPanelVisible) {
+                    console.log(`窗口横屏 (${currentWidth}x${currentHeight})，自动展开面板`);
+                    this.isRightPanelVisible = true;
+                    ui.toggleRightPanel(true);
+                    this.#savePanelState();
+                }
+                // 竖屏时隐藏面板
+                else if (!isLandscape && this.isRightPanelVisible) {
+                    console.log(`窗口竖屏 (${currentWidth}x${currentHeight})，自动隐藏面板`);
+                    this.isRightPanelVisible = false;
+                    ui.toggleRightPanel(false);
+                    this.#savePanelState();
+                }
+            }, 300); // 300ms 防抖延迟
+        };
+        
+        // 监听窗口大小变化
+        window.addEventListener('resize', handleResize);
+        
+        // 页面加载时检查一次
+        handleResize();
+        
+        console.log('已启动窗口大小监听（基于宽高比：宽>高显示，宽≤高隐藏）');
+    }
+
+    /**
+     * 设置窗口大小阈值（已弃用，现在使用宽高比判断）
+     * @param {number} threshold - 窗口宽度阈值（像素）
+     * @deprecated 现在使用宽高比判断（宽>高显示，宽≤高隐藏）
+     */
+    setResizeThreshold(threshold) {
+        this.windowResizeThreshold = threshold;
+        console.log(`[已弃用] 现在使用宽高比判断，不再使用固定阈值`);
+    }
+
+    /**
+     * 启用/禁用自动调整功能
+     * @param {boolean} enabled - 是否启用
+     */
+    setAutoResizeEnabled(enabled) {
+        this.isAutoResizeEnabled = enabled;
+        console.log(`自动调整面板功能: ${enabled ? '已启用' : '已禁用'}`);
     }
 
     #handleAutoRxClick() {

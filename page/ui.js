@@ -1,5 +1,5 @@
 // page/ui.js
-import { UI_CONFIG, SELECTORS } from './config.js';
+import { UI_CONFIG, SELECTORS, MARK_SOUND_URL } from './config.js';
 import { Logger } from './utils.js';
 
 /**
@@ -10,16 +10,22 @@ class UI {
         this.elements = {};
         this.patientButtonMap = new Map(); // 患者姓名到按钮元素的映射
         this.originalLayoutStyles = null; // 保存原始布局样式
+        this.lastDiagnosisCount = 0; // 上次问诊数量
+        this.lastCountChangeTime = Date.now(); // 上次数量变化时间
+        this.diagnosisCheckTimer = null; // 问诊数量检查定时器
+        this.isAlertMode = false; // 是否处于红色警告模式
+        this.STORAGE_KEY = 'dr-helper-marked-patients'; // localStorage key
     }
 
     /**
      * 创建初始UI元素并将其注入到页面中
+     * @param {boolean} isDisabledTenant - 是否为禁用租户（JD8888等）
      */
-    createInitialUI() {
+    createInitialUI(isDisabledTenant = false) {
         this.#createStyles();
         this.#createButtonsContainer();
-        this.#createStatusLabels();
-        this.#createPanelToggleButton();
+        this.#createStatusLabels(isDisabledTenant); // 传递参数
+        // this.#createPanelToggleButton(); // 已移除面板切换按钮，使用自动窗口大小调整
         this.#setupAutoMarkListener();
         
         // 延迟启动保护，确保元素已经创建完成
@@ -35,32 +41,38 @@ class UI {
      */
     #setupAutoMarkListener() {
         document.addEventListener('autoMarkPatient', (event) => {
-            const { patientName, orderId, reason } = event.detail;
-            this.#autoMarkPatient(patientName, reason);
+            const { displayText, patientName, orderId, reason } = event.detail;
+            this.#autoMarkPatient(displayText || patientName, reason);
         });
     }
 
     /**
      * 自动标记患者（由定时器触发）
-     * @param {string} patientName 患者姓名
+     * @param {string} displayText 显示文本（患者名+分类）
      * @param {string} reason 标记原因
      */
-    #autoMarkPatient(patientName, reason) {
+    #autoMarkPatient(displayText, reason) {
         try {
             // 查找可用的按钮（空闲状态的按钮）
             const availableButton = this.#findAvailablePatientButton();
             
             if (availableButton) {
-                // 设置按钮文本和颜色
-                availableButton.textContent = patientName;
+                // 设置按钮文本和颜色（显示完整的 "患者名+分类"）
+                availableButton.textContent = displayText;
                 availableButton.style.setProperty('background-color', UI_CONFIG.BUTTON_COLORS.NOTIFIED, 'important');
                 
-                // 添加到映射中
-                this.patientButtonMap.set(patientName, availableButton);
+                // 添加到映射中（使用 displayText 作为 key，避免重复显示）
+                this.patientButtonMap.set(displayText, availableButton);
                 
-                console.log(`自动标记患者: ${patientName} (原因: ${reason})`);
+                // 保存到 localStorage
+                this.#saveMarkedPatients();
+                
+                console.log(`自动标记: ${displayText} (原因: ${reason})`);
+                
+                // 播放标记提醒声音
+                this.#playMarkSound();
             } else {
-                console.warn(`无可用按钮标记患者: ${patientName}`);
+                console.warn(`无可用按钮标记: ${displayText}`);
             }
         } catch (error) {
             console.error('自动标记患者失败:', error);
@@ -79,6 +91,19 @@ class UI {
             }
         }
         return null;
+    }
+
+    /**
+     * 播放标记提醒声音（通过 content script）
+     */
+    #playMarkSound() {
+        try {
+            console.log('🔊 请求播放音频');
+            // 发送消息给 content script 播放音频
+            window.postMessage({ type: 'PLAY_MARK_AUDIO' }, '*');
+        } catch (error) {
+            console.error('❌ 发送播放音频请求失败:', error);
+        }
     }
 
     /**
@@ -155,20 +180,39 @@ class UI {
         document.body.appendChild(container);
         this.elements.buttonsContainer = container;
         
+        // 延迟恢复标记的患者，确保 DOM 完全准备好
+        setTimeout(() => {
+            this.#restoreMarkedPatients();
+        }, 100);
+        
         // 简化的位置保护 - 仅针对顶部容器
         this.#protectTopContainer(container);
     }
 
     /**
      * 为医生姓名、工作状态和自动开药状态创建左下角状态标签
+     * @param {boolean} isDisabledTenant - 是否为禁用租户（JD8888等）
      */
-    #createStatusLabels() {
-        const doctorLabel = this.#createButton('doctor-status-label', '加载中...', UI_CONFIG.TIMER_STATUS_COLORS.ACTIVE, 'dr-helper-status-label');
-        doctorLabel.style.cssText = `
+    #createStatusLabels(isDisabledTenant = false) {
+        // 创建一个包装容器用于相对定位
+        const doctorLabelWrapper = document.createElement('div');
+        doctorLabelWrapper.id = 'doctor-label-wrapper';
+        doctorLabelWrapper.style.cssText = `
             position: fixed !important;
             bottom: 10px !important;
             left: 10px !important;
             z-index: 999999 !important;
+            display: inline-block !important;
+        `;
+        
+        // 注意：不使用 #createButton，因为它会设置 textContent，会清空子元素
+        const doctorLabel = document.createElement('button');
+        doctorLabel.id = 'doctor-status-label';
+        doctorLabel.className = 'dr-helper-status-label';
+        // 创建文本节点而不是使用 textContent
+        doctorLabel.appendChild(document.createTextNode('加载中...'));
+        doctorLabel.style.cssText = `
+            position: relative !important;
             color: white !important;
             padding: 10px !important;
             font-size: 24px !important;
@@ -181,6 +225,38 @@ class UI {
             opacity: 1 !important;
         `;
         this.elements.doctorStatusLabel = doctorLabel;
+
+        // 创建问诊数量角标（显示在右上角）
+        const diagnosisBadge = document.createElement('span');
+        diagnosisBadge.id = 'diagnosis-count-badge';
+        diagnosisBadge.textContent = '0'; // 默认显示0
+        diagnosisBadge.style.cssText = `
+            position: absolute !important;
+            top: -14px !important;
+            right: -10px !important;
+            background-color: rgb(255, 87, 34) !important;
+            color: white !important;
+            padding: 4px 10px !important;
+            font-size: 16px !important;
+            font-weight: bold !important;
+            border-radius: 12px !important;
+            border: 2px solid white !important;
+            display: block !important;
+            visibility: visible !important;
+            min-width: 28px !important;
+            text-align: center !important;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3) !important;
+            line-height: 1.2 !important;
+        `;
+        this.elements.diagnosisBadge = diagnosisBadge;
+        console.log('✅ 问诊徽章已创建:', diagnosisBadge);
+        
+        // 组装：wrapper -> label -> badge
+        doctorLabel.appendChild(diagnosisBadge);
+        console.log('✅ 徽章已添加到医生标签，父元素:', diagnosisBadge.parentElement?.id);
+        doctorLabelWrapper.appendChild(doctorLabel);
+        console.log('✅ 医生标签已添加到 wrapper');
+        this.elements.doctorLabelWrapper = doctorLabelWrapper;
 
         const workStatusLabel = this.#createButton('work-status-label', UI_CONFIG.WORK_STATUS_BUTTON_STATE.OPEN, UI_CONFIG.WORK_STATUS_BUTTON_COLORS.OPEN, 'dr-helper-status-label');
         workStatusLabel.style.cssText = `
@@ -201,31 +277,66 @@ class UI {
         `;
         this.elements.workStatusLabel = workStatusLabel;
 
-        const rxLabel = this.#createButton('autorx-status-label', UI_CONFIG.PRESCRIPTION_BUTTON_STATE.IDLE, UI_CONFIG.PRESCRIPTION_BUTTON_COLORS.IDLE, 'dr-helper-status-label');
-        rxLabel.style.cssText = `
-            position: fixed !important;
-            bottom: 150px !important;
-            left: 10px !important;
-            z-index: 999999 !important;
-            color: white !important;
-            padding: 10px !important;
-            font-size: 24px !important;
-            border-radius: 5px !important;
-            border: none !important;
-            cursor: pointer !important;
-            background-color: ${UI_CONFIG.PRESCRIPTION_BUTTON_COLORS.IDLE} !important;
-            display: block !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        `;
-        this.elements.autoRxStatusLabel = rxLabel;
-
-        document.body.appendChild(doctorLabel);
-        document.body.appendChild(workStatusLabel);
-        document.body.appendChild(rxLabel);
+        document.body.appendChild(doctorLabelWrapper);
+        console.log('✅ wrapper 已添加到 body');
         
-        // 简化的位置保护 - 仅针对底部元素
-        this.#protectBottomElements(doctorLabel, workStatusLabel, rxLabel);
+        // 添加点击事件：点击医生标签恢复颜色
+        doctorLabel.addEventListener('click', () => {
+            if (this.isAlertMode) {
+                this.#resetDoctorLabelColor();
+                this.lastCountChangeTime = Date.now(); // 重置计时
+                console.log('✅ 用户点击医生标签，警告模式已解除');
+            }
+        });
+        
+        // 启动问诊数量监控定时器
+        this.#startDiagnosisMonitor();
+        
+        // 验证徽章是否在DOM中
+        setTimeout(() => {
+            const badge = document.getElementById('diagnosis-count-badge');
+            console.log('🔍 1秒后检查徽章是否在DOM中:', badge ? '找到了' : '未找到');
+            if (badge) {
+                console.log('徽章详情:', {
+                    id: badge.id,
+                    textContent: badge.textContent,
+                    parent: badge.parentElement?.id,
+                    grandParent: badge.parentElement?.parentElement?.id
+                });
+            }
+        }, 1000);
+        
+        // 只有非禁用租户才创建工作状态和开方按钮
+        if (!isDisabledTenant) {
+            document.body.appendChild(workStatusLabel);
+            
+            const rxLabel = this.#createButton('autorx-status-label', UI_CONFIG.PRESCRIPTION_BUTTON_STATE.IDLE, UI_CONFIG.PRESCRIPTION_BUTTON_COLORS.IDLE, 'dr-helper-status-label');
+            rxLabel.style.cssText = `
+                position: fixed !important;
+                bottom: 150px !important;
+                left: 10px !important;
+                z-index: 999999 !important;
+                color: white !important;
+                padding: 10px !important;
+                font-size: 24px !important;
+                border-radius: 5px !important;
+                border: none !important;
+                cursor: pointer !important;
+                background-color: ${UI_CONFIG.PRESCRIPTION_BUTTON_COLORS.IDLE} !important;
+                display: block !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+            `;
+            this.elements.autoRxStatusLabel = rxLabel;
+            document.body.appendChild(rxLabel);
+            
+            // 包含开方按钮和工作状态按钮的位置保护
+            this.#protectBottomElements(doctorLabelWrapper, workStatusLabel, rxLabel);
+        } else {
+            // JD8888租户：只显示医生名字，隐藏开诊和开方按钮
+            console.log('⚠️ JD8888租户：已禁用开诊和开方按钮');
+            this.#protectBottomElements(doctorLabelWrapper);
+        }
     }
 
     /**
@@ -356,15 +467,15 @@ class UI {
     /**
      * 保护底部元素位置
      */
-    #protectBottomElements(doctorLabel, workStatusLabel, rxLabel) {
+    #protectBottomElements(doctorLabelWrapper, workStatusLabel, rxLabel) {
         const resetDoctorLabel = () => {
-            if (doctorLabel) {
-                doctorLabel.style.position = 'fixed !important';
-                doctorLabel.style.bottom = '10px !important';
-                doctorLabel.style.left = '10px !important';
-                doctorLabel.style.zIndex = '999999';
-                doctorLabel.style.display = 'block !important';
-                doctorLabel.style.visibility = 'visible !important';
+            if (doctorLabelWrapper) {
+                doctorLabelWrapper.style.position = 'fixed !important';
+                doctorLabelWrapper.style.bottom = '10px !important';
+                doctorLabelWrapper.style.left = '10px !important';
+                doctorLabelWrapper.style.zIndex = '999999';
+                doctorLabelWrapper.style.display = 'inline-block !important';
+                doctorLabelWrapper.style.visibility = 'visible !important';
             }
         };
         
@@ -411,6 +522,7 @@ class UI {
         
         // 检查底部状态标签
         const doctorLabel = document.getElementById('doctor-status-label');
+        const diagnosisBadge = document.getElementById('diagnosis-count-badge');
         const workStatusLabel = document.getElementById('work-status-label');
         const rxLabel = document.getElementById('autorx-status-label');
         
@@ -423,6 +535,31 @@ class UI {
                 display: doctorLabel.style.display,
                 visibility: doctorLabel.style.visibility,
                 zIndex: doctorLabel.style.zIndex
+            });
+        }
+        
+        console.log('Diagnosis Badge:', diagnosisBadge ? 'Found' : 'NOT FOUND');
+        if (diagnosisBadge) {
+            console.log('Diagnosis Badge Styles:', {
+                position: diagnosisBadge.style.position,
+                top: diagnosisBadge.style.top,
+                right: diagnosisBadge.style.right,
+                display: diagnosisBadge.style.display,
+                visibility: diagnosisBadge.style.visibility,
+                textContent: diagnosisBadge.textContent,
+                parent: diagnosisBadge.parentElement?.id
+            });
+        }
+        
+        const doctorWrapper = document.getElementById('doctor-label-wrapper');
+        console.log('Doctor Wrapper:', doctorWrapper ? 'Found' : 'NOT FOUND');
+        if (doctorWrapper) {
+            console.log('Doctor Wrapper Styles:', {
+                position: doctorWrapper.style.position,
+                bottom: doctorWrapper.style.bottom,
+                left: doctorWrapper.style.left,
+                display: doctorWrapper.style.display,
+                visibility: doctorWrapper.style.visibility
             });
         }
         
@@ -619,20 +756,24 @@ class UI {
         // 全局检查所有插件元素的位置
         const globalCheck = () => {
             // 检查所有插件创建的元素
-            const pluginElements = document.querySelectorAll('[id^="dr-helper-"], .dr-helper-button, .dr-helper-status-label, .dr-helper-container, .dr-helper-panel-toggle');
+            const pluginElements = document.querySelectorAll('[id^="dr-helper-"], #doctor-label-wrapper, .dr-helper-button, .dr-helper-status-label, .dr-helper-container, .dr-helper-panel-toggle');
             
             pluginElements.forEach(element => {
-                if (element.style.position === 'fixed' || element.classList.contains('dr-helper-status-label') || element.classList.contains('dr-helper-container') || element.classList.contains('dr-helper-panel-toggle')) {
+                if (element.id === 'doctor-label-wrapper') {
+                    // wrapper 使用 fixed 定位
+                    element.style.position = 'fixed !important';
+                    element.style.bottom = '10px !important';
+                    element.style.left = '10px !important';
+                    element.style.top = '';
+                    element.style.right = '';
+                    element.style.display = 'inline-block !important';
+                    element.style.visibility = 'visible !important';
+                } else if (element.style.position === 'fixed' || element.classList.contains('dr-helper-status-label') || element.classList.contains('dr-helper-container') || element.classList.contains('dr-helper-panel-toggle')) {
                     // 确保position固定
                     element.style.position = 'fixed !important';
                     
                     // 特别处理不同位置的元素
-                    if (element.id === 'doctor-status-label') {
-                        element.style.bottom = '10px !important';
-                        element.style.left = '10px !important';
-                        element.style.top = '';
-                        element.style.right = '';
-                    } else if (element.id === 'work-status-label') {
+                    if (element.id === 'work-status-label') {
                         element.style.bottom = '80px !important';
                         element.style.left = '10px !important';
                         element.style.top = '';
@@ -647,15 +788,27 @@ class UI {
                         element.style.left = '10px !important';
                         element.style.bottom = '';
                         element.style.right = '';
-                    } else if (element.id === 'panel-toggle-button') {
-                        element.style.right = '0px !important';
-                        element.style.top = '50% !important';
-                        element.style.transform = 'translateY(-50%) !important';
-                        element.style.left = '';
-                        element.style.bottom = '';
                     }
+                    // 面板切换按钮已移除
+                    // else if (element.id === 'panel-toggle-button') {
+                    //     element.style.right = '0px !important';
+                    //     element.style.top = '50% !important';
+                    //     element.style.transform = 'translateY(-50%) !important';
+                    //     element.style.left = '';
+                    //     element.style.bottom = '';
+                    // }
                 }
             });
+            
+            // 单独保护问诊徽章（角标样式）
+            const badge = document.getElementById('diagnosis-count-badge');
+            if (badge) {
+                badge.style.position = 'absolute !important';
+                badge.style.top = '-8px !important';
+                badge.style.right = '-8px !important';
+                badge.style.display = 'block !important';
+                badge.style.visibility = 'visible !important';
+            }
         };
         
         // 立即执行一次
@@ -688,7 +841,16 @@ class UI {
 
     updateDoctorName(name) {
         if (this.elements.doctorStatusLabel) {
-            this.elements.doctorStatusLabel.textContent = name;
+            // 找到第一个文本节点并更新，保留子元素（徽章）
+            const textNode = Array.from(this.elements.doctorStatusLabel.childNodes).find(node => node.nodeType === Node.TEXT_NODE);
+            if (textNode) {
+                textNode.textContent = name;
+            } else {
+                // 如果没有文本节点，创建一个并插入到徽章之前
+                const newTextNode = document.createTextNode(name);
+                this.elements.doctorStatusLabel.insertBefore(newTextNode, this.elements.doctorStatusLabel.firstChild);
+            }
+            console.log('✅ 医生姓名已更新为:', name, '，徽章是否还在:', document.getElementById('diagnosis-count-badge') ? '在' : '丢失');
         }
     }
 
@@ -731,12 +893,12 @@ class UI {
             this.#findAndHideRightPanel();
         }
         
-        // 更新切换按钮状态
-        if (this.elements.panelToggleButton) {
-            this.elements.panelToggleButton.textContent = isVisible ? 
-                UI_CONFIG.PANEL_TOGGLE_BUTTON_STATE.HIDE : 
-                UI_CONFIG.PANEL_TOGGLE_BUTTON_STATE.SHOW;
-        }
+        // 面板切换按钮已移除
+        // if (this.elements.panelToggleButton) {
+        //     this.elements.panelToggleButton.textContent = isVisible ? 
+        //         UI_CONFIG.PANEL_TOGGLE_BUTTON_STATE.HIDE : 
+        //         UI_CONFIG.PANEL_TOGGLE_BUTTON_STATE.SHOW;
+        // }
     }
 
     /**
@@ -925,7 +1087,75 @@ class UI {
 
     updateTimerStatus(isActive) {
         if (this.elements.doctorStatusLabel) {
-            this.elements.doctorStatusLabel.style.backgroundColor = isActive ? UI_CONFIG.TIMER_STATUS_COLORS.ACTIVE : UI_CONFIG.TIMER_STATUS_COLORS.INACTIVE;
+            // 只保持蓝色，移除绿色状态
+            this.elements.doctorStatusLabel.style.backgroundColor = UI_CONFIG.TIMER_STATUS_COLORS.ACTIVE;
+        }
+    }
+
+    /**
+     * 更新问诊数量徽章
+     * @param {number} count - 问诊中的数量
+     */
+    updateDiagnosisCount(count) {
+        if (this.elements.diagnosisBadge) {
+            this.elements.diagnosisBadge.textContent = count;
+            
+            // 检查数量是否变化
+            if (count !== this.lastDiagnosisCount) {
+                this.lastDiagnosisCount = count;
+                this.lastCountChangeTime = Date.now();
+                
+                // 如果数量变化，恢复颜色
+                if (this.isAlertMode) {
+                    this.#resetDoctorLabelColor();
+                }
+                
+                console.log(`📊 问诊数量已更新: ${count}`);
+            }
+        }
+    }
+    
+    /**
+     * 启动问诊数量监控定时器
+     */
+    #startDiagnosisMonitor() {
+        // 每10秒检查一次
+        this.diagnosisCheckTimer = setInterval(() => {
+            const currentCount = parseInt(this.elements.diagnosisBadge?.textContent || '0');
+            const timeSinceLastChange = Date.now() - this.lastCountChangeTime;
+            const oneMinute = 60 * 1000;
+            
+            // 如果数量>0 且 超过1分钟没变化 且 还未进入警告模式
+            if (currentCount > 0 && timeSinceLastChange >= oneMinute && !this.isAlertMode) {
+                this.#setDoctorLabelAlert();
+                console.log('⚠️ 问诊数量超过1分钟未变化，标签变红');
+            }
+            
+            // 如果数量变为0，恢复颜色
+            if (currentCount === 0 && this.isAlertMode) {
+                this.#resetDoctorLabelColor();
+            }
+        }, 10000); // 每10秒检查一次
+    }
+    
+    /**
+     * 设置医生标签为红色警告模式
+     */
+    #setDoctorLabelAlert() {
+        if (this.elements.doctorStatusLabel) {
+            this.isAlertMode = true;
+            this.elements.doctorStatusLabel.style.backgroundColor = 'rgb(220, 38, 38)'; // 红色
+            this.elements.doctorStatusLabel.style.cursor = 'pointer';
+        }
+    }
+    
+    /**
+     * 恢复医生标签颜色
+     */
+    #resetDoctorLabelColor() {
+        if (this.elements.doctorStatusLabel) {
+            this.isAlertMode = false;
+            this.elements.doctorStatusLabel.style.backgroundColor = 'rgb(30, 144, 255)'; // 蓝色
         }
     }
 
@@ -941,19 +1171,82 @@ class UI {
                 button.textContent = patientName;
                 button.style.setProperty('background-color', UI_CONFIG.BUTTON_COLORS.NOTIFIED, 'important');
                 this.patientButtonMap.set(patientName, button);
+                // 保存到 localStorage
+                this.#saveMarkedPatients();
+                // 播放标记提醒声音
+                this.#playMarkSound();
                 return true;
             }
         }
         return false; // 没有空闲按钮
     }
-
+    
+    /**
+     * 保存标记的患者到 localStorage
+     */
+    #saveMarkedPatients() {
+        try {
+            const patients = Array.from(this.patientButtonMap.keys());
+            localStorage.setItem(this.STORAGE_KEY, JSON.stringify(patients));
+            console.log('💾 保存标记患者到 localStorage:', patients);
+        } catch (error) {
+            console.error('保存标记患者失败:', error);
+        }
+    }
+    
+    /**
+     * 公开的保存方法，供外部调用
+     */
+    saveMarkedPatientsPublic() {
+        this.#saveMarkedPatients();
+    }
+    
+    /**
+     * 从 localStorage 恢复标记的患者
+     */
+    #restoreMarkedPatients() {
+        try {
+            const saved = localStorage.getItem(this.STORAGE_KEY);
+            if (saved) {
+                const patients = JSON.parse(saved);
+                console.log('📋 尝试恢复标记的患者:', patients);
+                
+                if (patients && patients.length > 0) {
+                    patients.forEach((patientName, index) => {
+                        if (index < 3) { // 最多3个按钮
+                            const button = this.elements[`patientButton${index + 1}`];
+                            if (button) {
+                                button.textContent = patientName;
+                                button.style.setProperty('background-color', UI_CONFIG.BUTTON_COLORS.NOTIFIED, 'important');
+                                this.patientButtonMap.set(patientName, button);
+                                console.log(`✅ 恢复患者 ${index + 1}: ${patientName}`);
+                            } else {
+                                console.warn(`❌ 按钮 ${index + 1} 不存在`);
+                            }
+                        }
+                    });
+                    console.log('✅ 标记患者恢复完成');
+                } else {
+                    console.log('ℹ️ 没有需要恢复的患者');
+                }
+            } else {
+                console.log('ℹ️ localStorage 中没有保存的患者数据');
+            }
+        } catch (error) {
+            console.error('❌ 恢复标记患者失败:', error);
+        }
+    }
+    
     clearPatientButtons() {
         for (let i = 1; i <= 3; i++) {
             const button = this.elements[`patientButton${i}`];
             button.textContent = UI_CONFIG.BUTTON_STATE.IDLE;
-            button.style.backgroundColor = UI_CONFIG.BUTTON_COLORS.IDLE;
+            button.style.setProperty('background-color', UI_CONFIG.BUTTON_COLORS.IDLE, 'important');
         }
         this.patientButtonMap.clear();
+        // 清除 localStorage 中的数据
+        this.#saveMarkedPatients();
+        console.log('✅ 已清除所有标记患者（包括持久化数据）');
     }
 
     /**

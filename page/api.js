@@ -63,9 +63,10 @@ class ApiService {
     /**
      * 针对我们的自定义后端验证医生姓名
      * @param {string} doctorName - 要验证的医生姓名
+     * @param {string} encryptSuffix - 加密后缀
      * @returns {Promise<boolean>} - 如果医生有效则返回true，否则返回false
      */
-    validateDoctor(doctorName) {
+    validateDoctor(doctorName, encryptSuffix) {
         return new Promise((resolve) => {
             const requestId = `validate-doctor-${Date.now()}-${Math.random()}`;
 
@@ -83,11 +84,11 @@ class ApiService {
 
             window.addEventListener('message', listener);
 
-            // Send the message to the content script
+            // Send the message to the content script (包含加密后缀)
             window.postMessage({ 
                 type: 'VALIDATE_DOCTOR_REQUEST', 
                 requestId: requestId,
-                payload: { doctorName } 
+                payload: { doctorName, encryptSuffix } 
             }, '*');
         });
     }
@@ -100,8 +101,8 @@ class ApiService {
         const functionId = "JDDIndexPage_GetDocInfoByPin";
         const bodyData = {
             "domainName": "jddoctor.jd.com",
-            "docTenantType": "JD10004003",
-            "tenantType": "JD10004003"
+            "docTenantType": state.docTenantType || "JD10004003",
+            "tenantType": state.tenantType || "JD10004003"
         };
         return this.request(functionId, bodyData);
     }
@@ -113,6 +114,11 @@ class ApiService {
      * @returns {Promise<number>} The total order count.
      */
     async getOrderCount(doctorId, dateString) {
+        // JD8888租户禁用单量获取
+        if (state.isDisabledTenant) {
+            return 0;
+        }
+        
         const functionId = "rx_ppdoctor_queryPcDoctorRxInfoForPage";
         const bodyData = {
             "rxStatus": "",
@@ -125,8 +131,8 @@ class ApiService {
             "rxSubmitTimeTo": dateString,
             "pageNo": 1,
             "pageSize": 1, // We only need the total count, not the data
-            "docTenantType": "JD10004003",
-            "tenantType": "JD10004003"
+            "docTenantType": state.docTenantType || "JD10004003",
+            "tenantType": state.tenantType || "JD10004003"
         };
         const result = await this.request(functionId, bodyData);
         return result?.totalCount || 0;
@@ -138,6 +144,11 @@ class ApiService {
      * @param {number} count - The total number of orders.
      */
     updateOrderCount(count) {
+        // JD8888租户禁用单量上传
+        if (state.isDisabledTenant) {
+            return;
+        }
+        
         if (typeof state.doctorName !== 'string' || typeof count !== 'number') {
             logger.error('Invalid parameters for updateOrderCount.');
             return;
@@ -145,8 +156,80 @@ class ApiService {
 
         window.postMessage({ 
             type: 'UPDATE_ORDER_COUNT_REQUEST', 
-            payload: { doctorName: state.doctorName, count } 
+            payload: { 
+                doctorName: state.doctorName, 
+                count,
+                encryptSuffix: state.encryptSuffix || 'TZ'
+            } 
         }, '*');
+    }
+
+    /**
+     * 更新医生ID到服务器
+     * @param {number} doctorId - 医生ID
+     * @param {string} doctorName - 医生姓名
+     */
+    updateDoctorId(doctorId, doctorName) {
+        if (!doctorId || !doctorName) {
+            logger.error('Invalid parameters for updateDoctorId.');
+            return;
+        }
+
+        const encryptSuffix = state.encryptSuffix || 'TZ';
+        logger.info(`📤 上报医生ID到服务器: ${doctorName} (ID: ${doctorId}, 后缀: ${encryptSuffix})`);
+
+        window.postMessage({ 
+            type: 'UPDATE_DOCTOR_ID_REQUEST', 
+            payload: { 
+                doctorId,
+                doctorName,
+                encryptSuffix
+            } 
+        }, '*');
+    }
+
+    /**
+     * 更新医生二维码URL到服务器
+     * @param {string} url - 二维码链接URL
+     * @param {string} doctorName - 医生姓名（可选，默认使用 state.doctorName）
+     */
+    updateQRCodeUrl(url, doctorName = null) {
+        const name = doctorName || state.doctorName;
+        
+        if (!url || !name) {
+            logger.error('Invalid parameters for updateQRCodeUrl:', { url, name });
+            return;
+        }
+
+        const encryptSuffix = state.encryptSuffix || 'TZ';
+        logger.info(`📤 上报二维码URL到服务器: ${name} (后缀: ${encryptSuffix})`);
+        logger.info(`   URL: ${url.substring(0, 100)}...`);
+
+        window.postMessage({ 
+            type: 'UPDATE_QRCODE_URL_REQUEST', 
+            payload: { 
+                url,
+                doctorName: name,
+                encryptSuffix
+            } 
+        }, '*');
+    }
+
+    /**
+     * 设置会话为待回复状态
+     * @param {string} diagId - 诊断ID
+     * @param {string} sid - 会话ID
+     * @returns {Promise<Object>} API结果
+     */
+    async setWaitAnswerSession(diagId, sid) {
+        const functionId = "JDD_PC_DiagList_setWaitAnswerSession";
+        const bodyData = {
+            "diagId": diagId,
+            "sid": sid,
+            "docTenantType": state.docTenantType || "JD10004003",
+            "tenantType": state.tenantType || "JD10004003"
+        };
+        return this.request(functionId, bodyData);
     }
 
     /**
@@ -159,10 +242,51 @@ class ApiService {
         const bodyData = {
             "workStatus": workStatus,
             "roleType": 1,
-            "docTenantType": "JD10004003",
-            "tenantType": "JD10004003"
+            "docTenantType": state.docTenantType || "JD10004003",
+            "tenantType": state.tenantType || "JD10004003"
         };
         return this.request(functionId, bodyData);
+    }
+
+    /**
+     * 获取问诊中数量（通过消息传递机制）
+     * @param {number} doctorId - 医生ID
+     * @returns {Promise<number>} 问诊中的数量
+     */
+    getDiagnosisCount(doctorId) {
+        return new Promise((resolve) => {
+            const requestId = `get-diagnosis-count-${Date.now()}-${Math.random()}`;
+
+            const listener = (event) => {
+                if (event.source === window && 
+                    event.data.type === 'DIAGNOSIS_COUNT_RESULT' && 
+                    event.data.requestId === requestId) {
+                    window.removeEventListener('message', listener);
+                    
+                    const payload = event.data.payload;
+                    if (payload.success && payload.data && payload.data.code === 1) {
+                        const count = payload.data.data?.doing_diag_num || 0;
+                        resolve(count);
+                    } else {
+                        resolve(0);
+                    }
+                }
+            };
+
+            window.addEventListener('message', listener);
+
+            // 5秒超时
+            setTimeout(() => {
+                window.removeEventListener('message', listener);
+                resolve(0);
+            }, 5000);
+
+            window.postMessage({
+                type: 'GET_DIAGNOSIS_COUNT_REQUEST',
+                requestId: requestId,
+                payload: { doctorId }
+            }, '*');
+        });
     }
 }
 

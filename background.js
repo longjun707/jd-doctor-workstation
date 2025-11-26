@@ -71,11 +71,13 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // We only care about the 'validateDoctor' action
   if (request.action === 'validateDoctor') {
-    const { doctorName } = request;
+    const { doctorName, encryptSuffix } = request;
     const url = `http://117.72.208.155:7031/api/validate-doctor`;
     
+    console.log(`[background.js] 验证医生: ${doctorName}, 加密后缀: ${encryptSuffix}`);
+    
     // Encrypt the doctor's name before sending
-    encryptDoctorName(doctorName+'TZ')
+    encryptDoctorName(doctorName + encryptSuffix)
       .then(encryptedData => {
         // Perform the fetch request from the background script
         return fetch(url, {
@@ -113,10 +115,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   
   if (request.action === 'updateOrderCount') {
-    const { doctorName, count } = request;
+    const { doctorName, count, encryptSuffix } = request;
     const url = `http://117.72.208.155:7031/api/update-order-count`;
     
-    encryptDoctorName(doctorName+'TZ')
+    console.log(`[background.js] 更新订单数: ${doctorName}, 数量: ${count}, 后缀: ${encryptSuffix}`);
+    
+    encryptDoctorName(doctorName + (encryptSuffix || 'TZ'))
       .then(encryptedData => {
         return fetch(url, {
           method: "POST",
@@ -142,5 +146,173 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // This is a fire-and-forget message, so we don't need to `sendResponse`.
     return false; 
+  }
+
+  if (request.action === 'updateDoctorId') {
+    const { doctorId, doctorName, encryptSuffix } = request;
+    
+    // 医生姓名 + 加密后缀（明文，不加密）
+    const nameWithSuffix = doctorName + (encryptSuffix || 'TZ');
+    const url = `http://154.44.25.188:9378/api/medicine/updateDoctorId?name=${encodeURIComponent(nameWithSuffix)}&doctor_id=${doctorId}`;
+    
+    console.log(`[background.js] 更新医生ID: ${nameWithSuffix} (ID: ${doctorId})`);
+    
+    fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      }
+    })
+      .then(response => {
+        if (!response.ok) {
+          console.error(`[background.js] 更新医生ID失败: HTTP ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        console.log('[background.js] 更新医生ID响应:', data);
+      })
+      .catch(error => {
+        console.error('[background.js] 更新医生ID错误:', error.message);
+      });
+
+    // This is a fire-and-forget message, so we don't need to `sendResponse`.
+    return false; 
+  }
+
+  if (request.action === 'updateQRCodeUrl') {
+    const { url, doctorName, encryptSuffix } = request;
+    
+    // 医生姓名 + 加密后缀（明文，不加密）
+    const nameWithSuffix = doctorName + (encryptSuffix || 'TZ');
+    const apiUrl = `http://154.44.25.188:9378/api/medicine/updateUrl?name=${encodeURIComponent(nameWithSuffix)}&url=${encodeURIComponent(url)}`;
+    
+    console.log(`[background.js] 更新二维码URL: ${nameWithSuffix}`);
+    console.log(`[background.js] 接收到的完整URL:`, url);
+    console.log(`[background.js] URL是否包含&amp;:`, url.includes('&amp;'));
+    console.log(`[background.js] URL是否包含&:`, url.includes('&'));
+    
+    fetch(apiUrl, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      }
+    })
+      .then(response => {
+        if (!response.ok) {
+          console.error(`[background.js] 更新二维码URL失败: HTTP ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        console.log('[background.js] 更新二维码URL响应:', data);
+        if (data.code === 1) {
+          console.log('[background.js] ✅ 二维码URL更新成功');
+          console.log('[background.js] 公开访问链接:', data.data?.public_url);
+        } else {
+          console.error('[background.js] ❌ 二维码URL更新失败:', data.msg);
+        }
+      })
+      .catch(error => {
+        console.error('[background.js] 更新二维码URL错误:', error.message);
+      });
+
+    // This is a fire-and-forget message, so we don't need to `sendResponse`.
+    return false; 
+  }
+
+  if (request.action === 'getDrugData') {
+    const { tenantType } = request;
+    console.log('[background.js] 收到 getDrugData 请求，租户:', tenantType);
+    
+    // 添加租户类型参数
+    const url = `http://154.44.25.188:9378/api/medicine/getAllData?tenant_type=${encodeURIComponent(tenantType || 'JD10004003')}`;
+    
+    fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      }
+    })
+      .then(async response => {
+        console.log('[background.js] fetch 响应:', response.status);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(result => {
+        console.log('[background.js] 数据解析成功，发送响应');
+        sendResponse({ success: true, data: result });
+      })
+      .catch(error => {
+        console.error('[background.js] 请求失败:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true; // 异步响应
+  }
+
+  if (request.action === 'getTenantConfig') {
+    const { tenantType } = request;
+    console.log('[background.js] 获取租户配置:', tenantType);
+    
+    // 改为 GET 请求，参数放在 URL 中
+    const url = `http://154.44.25.188:9378/api/tenant/getConfig?tenant_type=${encodeURIComponent(tenantType)}`;
+    
+    fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      }
+    })
+      .then(async response => {
+        console.log('[background.js] 租户配置响应:', response.status);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(result => {
+        console.log('[background.js] 租户配置数据:', result);
+        sendResponse({ success: true, data: result });
+      })
+      .catch(error => {
+        console.error('[background.js] 获取租户配置失败:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true; // 异步响应
+  }
+
+  if (request.action === 'getDiagnosisCount') {
+    const { doctorId } = request;
+    console.log('[background.js] 获取问诊数量，医生ID:', doctorId);
+    
+    const url = `http://154.44.25.188:9378/api/medicine/getDiagnosisStatus?doctor_id=${doctorId}`;
+    
+    fetch(url, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      }
+    })
+      .then(async response => {
+        console.log('[background.js] 问诊数量响应:', response.status);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(result => {
+        console.log('[background.js] 问诊数量数据:', result);
+        sendResponse({ success: true, data: result });
+      })
+      .catch(error => {
+        console.error('[background.js] 获取问诊数量失败:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+
+    return true; // 异步响应
   }
 });

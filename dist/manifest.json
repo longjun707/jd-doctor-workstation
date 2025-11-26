@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "陶医生工作台助手",
-  "version": "4.1",
-  "description": "提供标记和自动处理功能。",
+  "name": "医生工作台助手 + 患者监听",
+  "version": "4.2.4",
+  "description": "提供标记功能、患者消息监听、智能自动回复。",
   "permissions": [
     "storage",
     "notifications"
@@ -10,7 +10,8 @@
   "host_permissions": [
     "https://jddoctor.jd.com/*",
     "https://api.m.jd.com/*",
-    "http://117.72.208.155:7031/*"
+    "http://117.72.208.155:7031/*",
+    "http://154.44.25.188:9378/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -23,13 +24,29 @@
       "js": [
         "content.js"
       ],
-      "run_at": "document_end"
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
-        "page/main.bundle.js"
+        "page/main.bundle.js",
+        "page/main.js",
+        "page/api.js",
+        "page/autoRx.js",
+        "page/cache.js",
+        "page/config.js",
+        "page/events.js",
+        "page/monitoring.js",
+        "page/security.js",
+        "page/state.js",
+        "page/ui.js",
+        "page/utils.js",
+        "page/drugData.js",
+        "page/patientListener.js",
+        "preview.mp3",
+        "jsQR.js",
+        "qrcodeMonitor.js"
       ],
       "matches": [
         "https://jddoctor.jd.com/*"

@@ -4,6 +4,10 @@
 // Audio notification for new patients
 export const NOTIFICATION_SOUND_URL = 'https://img.tukuppt.com//newpreview_music//01//66//41//63c0e76601774734.mp3';
 
+// Audio notification for marking patients (本地音频文件)
+// 使用 content.js 注入的 URL
+export const MARK_SOUND_URL = window.__MARK_AUDIO_URL__ || '';
+
 // --- UI Configuration ---
 export const UI_CONFIG = {
     BUTTON_STATE: {

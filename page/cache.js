@@ -75,7 +75,7 @@ class CacheService {
         if (!orderId) return;
         this.processedOrders.add(String(orderId));
         this._saveCache();
-        logger.log(`Added orderId ${orderId} to cache.`);
+        logger.info(`Added orderId ${orderId} to cache.`);
     }
 
     /**

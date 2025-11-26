@@ -15,10 +15,13 @@ module.exports = {
     filename: '[name].js', // 输出文件名将与入口名相同
   },
   plugins: [
-    // 插件1: 复制 manifest.json
+    // 插件1: 复制 manifest.json 和其他静态资源
     new CopyWebpackPlugin({
       patterns: [
         { from: 'manifest.json', to: 'manifest.json' },
+        { from: 'jsQR.js', to: 'jsQR.js' },
+        { from: 'qrcodeMonitor.js', to: 'qrcodeMonitor.js' },
+        // patientListener.js 现在已经打包进 main.bundle.js，不需要单独复制
         // 如果您有图标等其他静态资源，也在这里添加
         // { from: 'icons', to: 'icons' }
       ],
@@ -34,6 +37,11 @@ module.exports = {
       // 更多配置请参考 webpack-obfuscator 文档
     }, []),
   ],
+  // 解析配置
+  resolve: {
+    extensions: ['.js', '.json'],
+    mainFields: ['main', 'module']
+  },
   // 模式设置为 'production' 会自动启用代码压缩 (Terser)
   mode: 'production',
 };
