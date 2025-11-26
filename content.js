@@ -140,6 +140,40 @@
       });
     }
 
+    // Bridge for skip patient
+    if (event.source === window && event.data.type === 'SKIP_PATIENT_REQUEST') {
+      const { doctorName, diagId, patientName } = event.data.payload || {};
+      const sendResult = (ok, extra) => window.postMessage({ type: 'SKIP_PATIENT_RESULT', payload: { ok, diagId, ...(extra||{}) } }, '*');
+      
+      const postViaBackground = () => new Promise((resolve, reject) => {
+        try {
+          if (!(chrome && chrome.runtime && chrome.runtime.id)) {
+            return reject(new Error('Extension context invalidated'));
+          }
+          chrome.runtime.sendMessage({ action: 'skipPatient', doctorName, diagId, patientName }, (resp) => {
+            resolve(resp);
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+      
+      const directFetch = () => fetch('http://154.44.25.188:8787/api/device/skip_patient', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doctorName, diagId, patientName })
+      }).then(r => r.json());
+      
+      postViaBackground()
+        .then(() => sendResult(true))
+        .catch((err) => {
+          // 背景页不可用时，直接调用后端作为兜底
+          directFetch()
+            .then((data) => sendResult(true, { via: 'direct', data }))
+            .catch(e2 => sendResult(false, { error: e2?.message || String(e2), via: 'direct' }));
+        });
+    }
+
   });
 
   // 先加载 jsQR 库（用于解析二维码）

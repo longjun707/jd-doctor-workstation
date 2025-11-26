@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "医生工作台助手 + 患者监听",
-  "version": "4.2.4",
+  "version": "4.2.5",
   "description": "提供标记功能、患者消息监听、智能自动回复。",
   "permissions": [
     "storage",
@@ -11,7 +11,8 @@
     "https://jddoctor.jd.com/*",
     "https://api.m.jd.com/*",
     "http://117.72.208.155:7031/*",
-    "http://154.44.25.188:9378/*"
+    "http://154.44.25.188:9378/*",
+    "http://154.44.25.188:8787/*"
   ],
   "background": {
     "service_worker": "background.js"

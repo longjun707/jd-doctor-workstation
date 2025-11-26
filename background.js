@@ -315,4 +315,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     return true; // 异步响应
   }
+
+  // 通知APP跳过患者（浏览器插件已自动回复）
+  if (request.action === 'skipPatient') {
+    const { doctorName, diagId, patientName } = request;
+    console.log(`[background.js] 通知跳过患者: diagId=${diagId}, doctor=${doctorName}, patient=${patientName}`);
+    
+    const url = `http://154.44.25.188:8787/api/device/skip_patient`;
+    
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ doctorName, diagId, patientName })
+    })
+      .then(response => response.json())
+      .then(data => {
+        console.log('[background.js] 跳过患者响应:', data);
+      })
+      .catch(error => {
+        console.error('[background.js] 跳过患者失败:', error.message);
+      });
+
+    // Fire-and-forget
+    return false;
+  }
 });

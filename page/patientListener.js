@@ -89,6 +89,23 @@ export function initializePatientListener() {
         socket.send(JSON.stringify(message));
         console.log(`🤖 已自动回复: "${replyContent}"`);
         
+        // 仅 JD8888：回复“在的，请稍等”后通知 APP 跳过
+        if (chatinfo?.tenantType === 'JD8888' && replyContent === '在的，请稍等') {
+          try {
+            window.postMessage({
+              type: 'SKIP_PATIENT_REQUEST',
+              payload: {
+                doctorName: window.__DOCTOR_NAME__ || '',
+                diagId: chatinfo.diagId,
+                patientName: chatinfo.patientName || ''
+              }
+            }, '*');
+            console.log(`📤 已通知APP跳过患者（回复后） diagId=${chatinfo.diagId}`);
+          } catch (skipErr) {
+            console.error('通知跳过患者失败:', skipErr);
+          }
+        }
+        
         // 1秒后调用待回复API - 已注释掉
         // setTimeout(async () => {
         //   try {
@@ -208,8 +225,8 @@ export function initializePatientListener() {
         const hasRx = rxList.length > 0;
         const isBeforeRx = hasRx && msgMid < rxList[rxList.length - 1].mid;
         
-        // OR逻辑
-        const shouldReply = hasDrug || !hasRx || isBeforeRx;
+        // 仅处方前触发
+        const shouldReply = !hasRx || isBeforeRx;
         
         let status = '';
         if (hasDrug && !hasRx) status = '有药物+未开处方';

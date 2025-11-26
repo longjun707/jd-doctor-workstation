@@ -66,6 +66,7 @@ class Application {
         // 4. 检查自动回复开关，如果启用则初始化患者消息监听器
         if (drugDataService.isAutoReplyEnabled()) {
             logger.info('✅ 自动回复已启用，启动患者消息监听器');
+            window.__DOCTOR_NAME__ = state.doctorName; // 供 patientListener 使用
             initializePatientListener();
         } else {
             logger.warn('⚠️ 自动回复未启用，跳过患者消息监听器初始化');
